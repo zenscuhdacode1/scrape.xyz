@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Install Python deps
-RUN pip install --no-cache-dir discord.py playwright aiohttp requests pycountry uuid
+RUN pip install --no-cache-dir discord.py playwright aiohttp requests pycountry uuid telethon
 
 # Install Chromium via Playwright
 RUN playwright install chromium
