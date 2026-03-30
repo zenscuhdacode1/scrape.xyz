@@ -758,22 +758,22 @@ async def monitor_loop():
                                     pub_text = f"PRIVATE CLOUD UPDATED !\n\nFiles added:\n{file_list}\n\n-DM @XN9BOWNER TO BUY\n-WAR VOUCHES: @warvouchess"
                                     promo_path = os.path.join("/app", "promo.gif")
                                     async with aiohttp.ClientSession() as sess:
-                                        for pub_chat in [TELEGRAM_PUBLIC_CHAT, TELEGRAM_PUBLIC_CHAT2]:  # TELEGRAM_PUBLIC_CHAT2 disabled
+                                        for pub_chat in [TELEGRAM_PUBLIC_CHAT]:  # TELEGRAM_PUBLIC_CHAT2 disabled
                                             try:
                                                 if os.path.exists(promo_path):
                                                     form = aiohttp.FormData()
                                                     form.add_field("chat_id", pub_chat)
                                                     form.add_field("caption", pub_text)
                                                     with open(promo_path, "rb") as img:
-                                                        form.add_field("photo", img.read(), filename="promo.gif", content_type="image/png")
-                                                    resp = await sess.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto", data=form)
+                                                        form.add_field("animation", img.read(), filename="promo.gif", content_type="image/gif")
+                                                    resp = await sess.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendAnimation", data=form)
                                                     body = await resp.json()
                                                     if not body.get("ok"):
-                                                        log.error(f"Telegram sendPhoto failed: {body}")
+                                                        log.error(f"Telegram sendAnimation failed: {body}")
                                                     else:
-                                                        log.info(f"Posted public update with image to {pub_chat}")
+                                                        log.info(f"Posted public update with gif to {pub_chat}")
                                                 else:
-                                                    log.warning(f"promo.gif not found at {promo_path}, sending text only")
+                                                    log.warning(f"promo.png not found at {promo_path}, sending text only")
                                                     resp = await sess.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                                                         json={"chat_id": pub_chat, "text": pub_text})
                                                     body = await resp.json()
