@@ -758,7 +758,7 @@ async def monitor_loop():
                                     pub_text = f"PRIVATE CLOUD UPDATED !\n\nFiles added:\n{file_list}\n\n-DM @XN9BOWNER TO BUY\n-WAR VOUCHES: @warvouchess"
                                     promo_path = os.path.join("/app", "promo.gif")
                                     async with aiohttp.ClientSession() as sess:
-                                        for pub_chat in [TELEGRAM_PUBLIC_CHAT]:  # TELEGRAM_PUBLIC_CHAT2 disabled
+                                        for pub_chat in [TELEGRAM_PUBLIC_CHAT, TELEGRAM_PUBLIC_CHAT2]:  # TELEGRAM_PUBLIC_CHAT2 disabled
                                             try:
                                                 if os.path.exists(promo_path):
                                                     form = aiohttp.FormData()
