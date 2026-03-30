@@ -578,12 +578,12 @@ async def monitor_loop():
                     log.info(f"Page {page_num}: {len(matches)} match(es)")
                     found.extend(matches)
 
-                # ── Also scrape pasted.pw ─────────────────────────────
-                try:
-                    pw_found = await scrape_pastedpw(page, PAGES_TO_SCAN)
-                    found.extend(pw_found)
-                except Exception as e:
-                    log.error(f"pasted.pw scrape failed: {e}")
+                # pasted.pw scraping disabled
+                # try:
+                #     pw_found = await scrape_pastedpw(page, PAGES_TO_SCAN)
+                #     found.extend(pw_found)
+                # except Exception as e:
+                #     log.error(f"pasted.pw scrape failed: {e}")
 
                 # Deduplicate and filter blacklisted titles
                 seen_this_run = set()
@@ -758,7 +758,7 @@ async def monitor_loop():
                                     pub_text = f"PRIVATE CLOUD UPDATED !\n\nFiles added:\n{file_list}\n\n-DM @XN9BOWNER TO BUY\n-WAR VOUCHES: @warvouchess"
                                     promo_path = os.path.join("/app", "promo.gif")
                                     async with aiohttp.ClientSession() as sess:
-                                        for pub_chat in [TELEGRAM_PUBLIC_CHAT, TELEGRAM_PUBLIC_CHAT2]:  # TELEGRAM_PUBLIC_CHAT2 disabled
+                                        for pub_chat in [TELEGRAM_PUBLIC_CHAT]:  # TELEGRAM_PUBLIC_CHAT2 disabled
                                             try:
                                                 if os.path.exists(promo_path):
                                                     form = aiohttp.FormData()
