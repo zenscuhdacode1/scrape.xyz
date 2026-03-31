@@ -898,7 +898,43 @@ async def monitor_loop():
 
                                 # Public channel update
                                 if toggles["telegram_public"]:
-                                    ...
+                                    private_post_count_ref = globals()
+                                    private_post_count_ref["private_post_count"] += 1
+                                    for chunk in chunks:
+                                        private_post_count_ref["recent_filenames"].append(f"[ {label.upper()} ] [ {len(chunk)} ] [ @warprivate ].txt")
+                                    log.info(f"Private post count: {private_post_count_ref['private_post_count']}")
+                                    if private_post_count_ref["private_post_count"] >= 2:
+                                        private_post_count_ref["private_post_count"] = 0
+                                        file_list = "\n".join(f"  • {fn}" for fn in private_post_count_ref["recent_filenames"])
+                                        private_post_count_ref["recent_filenames"] = []
+                                        pub_text = f"PRIVATE CLOUD UPDATED !\n\nFiles added:\n{file_list}\n\n-DM @XN9BOWNER TO BUY\n-WAR VOUCHES: @warvouchess"
+                                        promo_path = os.path.join("/app", "promo.gif")
+                                        async with aiohttp.ClientSession() as sess:
+                                            for pub_chat in [TELEGRAM_PUBLIC_CHAT, TELEGRAM_PUBLIC_CHAT2]:  # TELEGRAM_PUBLIC_CHAT2 disabled
+                                                try:
+                                                    if os.path.exists(promo_path):
+                                                        form = aiohttp.FormData()
+                                                        form.add_field("chat_id", pub_chat)
+                                                        form.add_field("caption", pub_text)
+                                                        with open(promo_path, "rb") as img:
+                                                            form.add_field("animation", img.read(), filename="promo.gif", content_type="image/gif")
+                                                        resp = await sess.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendAnimation", data=form)
+                                                        body = await resp.json()
+                                                        if not body.get("ok"):
+                                                            log.error(f"Telegram sendAnimation failed: {body}")
+                                                        else:
+                                                            log.info(f"Posted public update with gif to {pub_chat}")
+                                                    else:
+                                                        log.warning(f"promo.png not found at {promo_path}, sending text only")
+                                                        resp = await sess.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                                                            json={"chat_id": pub_chat, "text": pub_text})
+                                                        body = await resp.json()
+                                                        if not body.get("ok"):
+                                                            log.error(f"Telegram sendMessage failed: {body}")
+                                                        else:
+                                                            log.info(f"Posted public update to {pub_chat}")
+                                                except Exception as e:
+                                                    log.error(f"Failed to post public update to {pub_chat}: {e}")
 
 
 
