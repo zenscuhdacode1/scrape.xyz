@@ -21,6 +21,7 @@ RUN playwright install chromium
 
 COPY mercury_bot.py .
 COPY promo.gif .
+COPY forwarder_session.session .
 
 
 CMD ["python", "mercury_bot.py"]
