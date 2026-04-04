@@ -754,13 +754,6 @@ async def monitor_loop():
                                 except Exception as e:
                                     log.error(f"Failed to post domains ZIP: {e}")
 
-                            # Closing divider
-                            async with aiohttp.ClientSession() as sess:
-                                await sess.post(
-                                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                                    json={"chat_id": TELEGRAM_CHAT, "text": "---------------------------"}
-                                )
-
                             if toggles["telegram_public"]:
                                 private_post_count_ref = globals()
                                 private_post_count_ref["private_post_count"] += 1
