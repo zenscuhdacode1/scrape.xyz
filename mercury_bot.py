@@ -45,7 +45,7 @@ ARCHIVE_URL      = "https://pasteview.com/paste-archive"
 PASTEDPW_URL     = "https://pasted.pw/recent.php"
 SEEN_FILE        = "seen_urls.json"
 EMPTY_SCAN_ALERT = 10
-KEYWORDS         = ["hotmail", "hits", "mixed", "mix"]
+KEYWORDS         = ["hotmail", "hits", "mixed", "mix", "uhq"]
 BLACKLIST        = ["omegle", "teens", "bro", "sis", "sister", "brother", "incest", "minor", "underage"]
 
 # ─── LOGGING ─────────────────────────────────────────────────────────────────
