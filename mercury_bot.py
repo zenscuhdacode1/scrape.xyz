@@ -665,24 +665,17 @@ async def monitor_loop():
 
 
 
-                        # Split into chunks based on file size, disabled over 15000 lines
-                        if len(all_raw) > 15000:
-                            chunks = [all_raw]
-                            log.info(f"{len(all_raw)} combos — over 15000, no split")
+                        # Split into 2 files if over 500 lines, otherwise post as one
+                        if len(all_raw) > 500:
+                            mid = len(all_raw) // 2
+                            # Add some randomness to the split point
+                            mid = random.randint(int(mid * 0.8), int(mid * 1.2))
+                            mid = max(1, min(mid, len(all_raw) - 1))
+                            chunks = [all_raw[:mid], all_raw[mid:]]
+                            log.info(f"Split {len(all_raw)} combos into 2 files ({len(chunks[0])}/{len(chunks[1])})")
                         else:
-                            if len(all_raw) < 2500:
-                                min_size, max_size = 300, 700
-                            elif len(all_raw) < 5000:
-                                min_size, max_size = 1000, 2000
-                            else:
-                                min_size, max_size = 3000, 5000
-                            chunks = []
-                            remaining = all_raw[:]
-                            while remaining:
-                                size = random.randint(min(min_size, len(remaining)), min(max_size, len(remaining)))
-                                chunks.append(remaining[:size])
-                                remaining = remaining[size:]
-                            log.info(f"Split {len(all_raw)} combos into {len(chunks)} file(s) ({min_size}-{max_size} per chunk)")
+                            chunks = [all_raw]
+                            log.info(f"{len(all_raw)} combos — under 500, posting as one file")
 
                     if combined:
                         # DM owner
