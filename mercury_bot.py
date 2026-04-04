@@ -50,9 +50,11 @@ BLACKLIST        = ["omegle", "teens", "bro", "sis", "sister", "brother", "inces
 
 # ─── TELEGRAM CHANNEL EXTRACTION ───────────────────────────────────────────
 TELEGRAM_CHANNEL_ID = -1003628233821
-TELEGRAM_CHANNEL_KEYWORDS = ["ULP"]
+TELEGRAM_CHANNEL_KEYWORDS = ["ULP", "HOTMAIL"]
 TELEGRAM_SESSION_FILE = "forwarder_session.session"
 TELEGRAM_CHANNEL_RENAME = "ULP [COUNT] BY @XN9BOWNER"
+TELEGRAM_API_HASH = "ea6e0b4a23b65ec28360dc52e8eb3a56"
+TELEGRAM_API_ID = 36132917
 
 # ─── LOGGING ─────────────────────────────────────────────────────────────────
 logging.basicConfig(
