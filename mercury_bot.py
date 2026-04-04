@@ -699,7 +699,7 @@ async def monitor_loop():
                             async with aiohttp.ClientSession() as sess:
                                 await sess.post(
                                     f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                                    json={"chat_id": TELEGRAM_CHAT, "text": f"WARCLOUD UPDATE ({label.upper()})"}
+                                    json={"chat_id": TELEGRAM_CHAT, "text": f"{label.upper()} ALL BY @XN9BOWNER"}
                                 )
 
                             # Main files
